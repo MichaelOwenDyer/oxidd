@@ -881,12 +881,28 @@ where
         }
 
         LOCAL_STORE_STATE.with(|local| {
-            if addr(self.0) == local.current_store.get()
-                && (local.next_free.get() != 0
+            if addr(self.0) == local.current_store.get() {
+                if local.next_free.get() != 0
                     || local.initialized.get() % CHUNK_SIZE != 0
-                    || local.node_count_delta.get() != 0)
-            {
-                drop_slow(&self.0.inner_nodes.slots, &self.0.state, TERMINALS as u32);
+                    || local.node_count_delta.get() != 0
+                {
+                    drop_slow(&self.0.inner_nodes.slots, &self.0.state, TERMINALS as u32);
+                } else {
+                    // Nothing to flush, but ownership of the thread-local
+                    // fast path must still be released here regardless.
+                    // Leaving `current_store` pointing at this (about to be
+                    // dropped) `Store` is a real hazard: if a *different*
+                    // `Store` is later allocated at the same address (very
+                    // plausible for same-sized arenas reused from the
+                    // allocator after this one is freed), that new `Store`'s
+                    // `prepare_local_state()` would see `current_store` as
+                    // already matching its own address and treat the stale
+                    // cache as legitimately its own, without ever having
+                    // acquired it. Every subsequent `add_node`/`free_slot`
+                    // call for the new `Store` would then read/write this
+                    // thread's `LocalStoreState` under that false premise.
+                    local.current_store.set(0);
+                }
             }
         });
     }
